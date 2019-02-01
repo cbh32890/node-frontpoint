@@ -12,6 +12,7 @@ const HOME_URL = 'https://www.alarm.com/web/system/home'
 const SYSTEM_URL = 'https://www.alarm.com/web/api/systems/systems/'
 const PARTITION_URL = 'https://www.alarm.com/web/api/devices/partitions/'
 const SENSORS_URL = 'https://www.alarm.com/web/api/devices/sensors'
+const LIGHTS_URL = 'https://www.alarm.com/web/api/devices/lights'//added for lights
 const CT_JSON = 'application/json;charset=UTF-8'
 const UA = `node-frontpoint/${require('./package').version}`
 
@@ -33,6 +34,14 @@ const SENSOR_STATES = {
   WET: 6
 }
 
+//added for lights. Need to figure out other light states
+const LIGHT_STATES = {
+  OFFLINE: 0,
+  NOSTATE: 1,
+  ON: 2,
+  OFF: 3
+}
+
 exports.login = login
 exports.getCurrentState = getCurrentState
 exports.getPartition = getPartition
@@ -40,8 +49,11 @@ exports.getSensors = getSensors
 exports.armStay = armStay
 exports.armAway = armAway
 exports.disarm = disarm
+exports.turnOn = turnOn
+exports.turnOff = turnOff
 exports.SYSTEM_STATES = SYSTEM_STATES
 exports.SENSOR_STATES = SENSOR_STATES
+exports.LIGHT_STATES = LIGHT_STATES//added for lights
 
 // Exported methods ////////////////////////////////////////////////////////////
 
@@ -55,7 +67,7 @@ exports.SENSOR_STATES = SENSOR_STATES
  * @returns {Promise}
  */
 function login(username, password) {
-  let loginCookies, ajaxKey
+  let loginCookies, ajaxKey, expires
 
   return post(TOKEN_URL, {
     headers: { 'Content-Type': CT_JSON, Referer: LOGIN_URL, 'User-Agent': UA },
@@ -76,6 +88,7 @@ function login(username, password) {
           'User-Agent': UA
         }
       })
+      console.log(UA)
     })
     .then(res => {
       const redirectUrl = res.body
@@ -84,11 +97,16 @@ function login(username, password) {
     .then(res => {
       const cookies = res.headers.raw()['set-cookie']
       loginCookies = cookies.map(c => c.split(';')[0]).join('; ')
+      
 
-      const re = /afg=([^;]+);/.exec(loginCookies)
-      if (!re) throw new Error(`No afg cookie: ${loginCookies}`)
+      const re1 = /cookieTest=1; expires=([^;]+);/.exec(cookies)
+      if (!re1) throw new Error(`No cookieTest cookie: ${cookies}`)
+      expires = new Date(re1[1])
 
-      ajaxKey = re[1]
+      const re2 = /afg=([^;]+);/.exec(loginCookies)
+      if (!re2) throw new Error(`No afg cookie: ${cookies}`)
+      ajaxKey = re2[1]
+
     })
     .then(() =>
       get(IDENTITIES_URL, {
@@ -111,7 +129,8 @@ function login(username, password) {
         cookie: loginCookies,
         ajaxKey: ajaxKey,
         systems: systems,
-        identities: identities
+        identities: identities,
+        expires: expires
       }
     })
 }
@@ -127,6 +146,9 @@ function login(username, password) {
  *   method.
  * @returns {Promise}
  */
+
+
+
 function getCurrentState(systemID, authOpts) {
   return authenticatedGet(SYSTEM_URL + systemID, authOpts).then(res => {
     const rels = res.data.relationships
@@ -134,21 +156,29 @@ function getCurrentState(systemID, authOpts) {
       getPartition(p.id, authOpts)
     )
     const sensorIDs = rels.sensors.data.map(s => s.id)
+    const lightIDs = rels.lights.data.map(l => l.id)//added for lights
 
     return Promise.all([
       Promise.all(partTasks),
-      getSensors(sensorIDs, authOpts)
-    ]).then(partitionsAndSensors => {
-      const [partitions, sensors] = partitionsAndSensors
+      getSensors(sensorIDs, authOpts),
+      getLights(lightIDs, authOpts)//added for lights
+    ]).then(partitionsLightsAndSensors => {//changed for lights
+      const [partitions, sensors, lights] = partitionsLightsAndSensors//changed for lights
       return {
         id: res.data.id,
         attributes: res.data.attributes,
         partitions: partitions.map(p => p.data),
         sensors: sensors.data,
+        lights: lights.data,//added for lights
         relationships: rels
       }
     })
   })
+}
+
+
+function getState(systemID, authOpts) {
+  return authenticatedGet(SYSTEM_URL + systemID, authOpts)
 }
 
 /**
@@ -176,6 +206,14 @@ function getSensors(sensorIDs, authOpts) {
   const query = sensorIDs.map(id => `ids%5B%5D=${id}`).join('&')
   const url = `${SENSORS_URL}?${query}`
   return authenticatedGet(url, authOpts)
+}
+
+//added for lights
+function getLights(lightIDs, authOpts) {
+  if (!Array.isArray(lightIDs)) lightIDs = [lightIDs]
+  const lightQuery = lightIDs.map(id => `ids%5B%5D=${id}`).join('&')
+  const lightUrl = `${LIGHTS_URL}?${lightQuery}`
+  return authenticatedGet(lightUrl, authOpts)
 }
 
 /**
@@ -225,6 +263,16 @@ function disarm(partitionID, authOpts) {
   return arm(partitionID, 'disarm', authOpts)
 }
 
+//added for lights
+function turnOn(lightID, authOpts) {
+  return lightToggle(lightID, 'turnOn', authOpts)
+}
+
+//added for lights
+function turnOff(lightID, authOpts) {
+  return lightToggle(lightID, 'turnOff', authOpts)
+}
+
 // Helper methods //////////////////////////////////////////////////////////////
 
 function arm(partitionID, verb, authOpts, opts) {
@@ -237,6 +285,13 @@ function arm(partitionID, verb, authOpts, opts) {
     }
   })
   return authenticatedPost(url, postOpts)
+}
+
+//added for lights
+function lightToggle(lightID, verb, authOpts) {
+  const lightUrl = `${LIGHTS_URL}/${lightID}/${verb}`
+  const postOpts = Object.assign({}, authOpts)
+return authenticatedPost(lightUrl, postOpts)
 }
 
 function getValue(data, path) {
